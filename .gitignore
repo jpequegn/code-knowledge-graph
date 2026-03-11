@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+
+# Virtual environment (uv)
+.venv/
+
+# uv lock (keep uv.lock, ignore nothing else from uv)
+
+# CKG runtime data
+~/.ckg/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# macOS
+.DS_Store
