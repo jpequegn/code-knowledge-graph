@@ -1,0 +1,22 @@
+[project]
+name = "code-knowledge-graph"
+version = "0.1.0"
+description = "Property graph over Python codebases for structural analysis"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "click>=8.3.1",
+    "duckdb>=1.5.0",
+    "networkx>=3.6.1",
+    "rich>=14.3.3",
+]
+
+[project.scripts]
+ckg = "ckg.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["ckg"]
