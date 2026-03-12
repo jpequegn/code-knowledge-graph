@@ -52,6 +52,7 @@ class FunctionNode:
     class_name: str | None       # set when this is a method
     param_count: int = 0
     params: list[ParamInfo] = field(default_factory=list)
+    decorators: list[str] = field(default_factory=list)  # ast.unparse of each decorator
 
     node_type: NodeType = "function"
 
@@ -66,6 +67,7 @@ class ClassNode:
     bases: list[str]
     docstring: str | None
     method_count: int = 0
+    decorators: list[str] = field(default_factory=list)  # ast.unparse of each decorator
 
     node_type: NodeType = "class"
 

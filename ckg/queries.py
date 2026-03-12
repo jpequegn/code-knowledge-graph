@@ -409,7 +409,149 @@ class GraphQueries:
         ]
 
     # ------------------------------------------------------------------
-    # 9. Async functions
+    # 9. Functions / classes with a given decorator
+    # ------------------------------------------------------------------
+
+    def functions_with_decorator(
+        self,
+        pattern: str,
+        *,
+        substring: bool = True,
+    ) -> list[FunctionNode]:
+        """Return functions that have at least one decorator matching *pattern*.
+
+        Parameters
+        ----------
+        pattern:
+            Decorator string to search for (e.g. ``\"app.get\"``,
+            ``\"click.command\"``, ``\"staticmethod\"``).
+        substring:
+            If True (default), match when *pattern* appears anywhere in
+            the decorator string.  Set to False for exact matching.
+        """
+        result: list[FunctionNode] = []
+        for node in self._g._nodes.values():
+            if not isinstance(node, FunctionNode):
+                continue
+            for dec in node.decorators:
+                matched = pattern in dec if substring else dec == pattern
+                if matched:
+                    result.append(node)
+                    break
+        return sorted(result, key=lambda f: f.id)
+
+    # ------------------------------------------------------------------
+    # 10. Transitive dependency closure (file-level)
+    # ------------------------------------------------------------------
+
+    def transitive_deps(self, file_path: str) -> set[str]:
+        """Return all nodes reachable from *file_path* via IMPORTS edges.
+
+        This is the full transitive closure — everything the file (and its
+        imports) ultimately depend on.
+
+        Local modules and their corresponding FileNodes are treated as the
+        same node for traversal purposes: a local ``ModuleNode("service")``
+        is bridged to ``FileNode("service.py")`` so that ``service.py``'s
+        own imports are followed transitively.
+
+        Parameters
+        ----------
+        file_path:
+            Relative file path (e.g. ``\"cli.py\"``) or bare module name.
+
+        Returns
+        -------
+        set of node IDs (file paths and module names) that *file_path*
+        transitively imports.  The starting node itself is excluded.
+        """
+        from pathlib import Path as _Path
+
+        # Build stem → FileNode.id mapping for local module bridging
+        stem_to_file_id: dict[str, str] = {}
+        for nid, node in self._g._nodes.items():
+            if isinstance(node, FileNode):
+                stem = _Path(node.path).stem
+                stem_to_file_id[stem] = nid
+
+        # Build enriched imports DiGraph that bridges ModuleNode → FileNode
+        imports_view = nx.DiGraph()
+        for s, d, data in self._g.nx_graph.edges(data=True):
+            if data.get("edge_type") != "IMPORTS":
+                continue
+            imports_view.add_edge(s, d)
+            # If d is a local module name, also add edge d → d's FileNode
+            # so traversal continues into that file's own imports
+            if d in stem_to_file_id and d != stem_to_file_id[d]:
+                imports_view.add_edge(d, stem_to_file_id[d])
+
+        # Resolve the starting node
+        src = file_path
+        if src not in imports_view:
+            stem = src[:-3] if src.endswith(".py") else src
+            if stem in imports_view:
+                src = stem
+
+        if src not in imports_view:
+            return set()
+
+        reachable = nx.descendants(imports_view, src)
+        # Remove synthetic bridge nodes that are file aliases of module nodes
+        # we already have; keep both module name and file path for clarity
+        return reachable
+
+    # ------------------------------------------------------------------
+    # 11. Transitive callers (unbounded BFS upstream)
+    # ------------------------------------------------------------------
+
+    def transitive_callers(self, node_id: str) -> list[FunctionNode]:
+        """Return *all* functions that eventually call *node_id* (unbounded).
+
+        Unlike :meth:`impact_radius`, which is bounded to a fixed depth,
+        this performs a full BFS over CALLS in-edges and returns every
+        function reachable upstream.
+
+        Parameters
+        ----------
+        node_id:
+            Full node ID or bare function name (resolved if unambiguous).
+
+        Returns
+        -------
+        list of :class:`~ckg.models.FunctionNode` sorted by ID.
+        """
+        node_id = self._resolve_id(node_id)
+        node = self._g.get_node(node_id)
+        bare_name = node.name if isinstance(node, FunctionNode) else node_id
+
+        visited: set[str] = {node_id}
+        if bare_name != node_id:
+            visited.add(bare_name)
+        queue: list[str] = [node_id, bare_name] if bare_name != node_id else [node_id]
+        result: dict[str, FunctionNode] = {}
+
+        while queue:
+            current = queue.pop(0)
+            # Check in-edges on current (both qualified ID and bare name)
+            for src, _, data in self._g.nx_graph.in_edges(current, data=True):
+                if data.get("edge_type") != "CALLS":
+                    continue
+                if src in visited:
+                    continue
+                visited.add(src)
+                caller = self._g.get_node(src)
+                if isinstance(caller, FunctionNode):
+                    result[caller.id] = caller
+                    # Also expand bare name of caller to catch its own bare-name callers
+                    if caller.name not in visited:
+                        visited.add(caller.name)
+                        queue.append(caller.name)
+                queue.append(src)
+
+        return sorted(result.values(), key=lambda f: f.id)
+
+    # ------------------------------------------------------------------
+    # 12. Async functions
     # ------------------------------------------------------------------
 
     def async_functions(self) -> list[FunctionNode]:
@@ -420,7 +562,7 @@ class GraphQueries:
         )
 
     # ------------------------------------------------------------------
-    # 10. Subclasses (INHERITS edges)
+    # 13. Subclasses (INHERITS edges)
     # ------------------------------------------------------------------
 
     def subclasses(self, base_name: str) -> list[ClassNode]:
@@ -449,7 +591,7 @@ class GraphQueries:
         return sorted(result, key=lambda c: c.id)
 
     # ------------------------------------------------------------------
-    # 11. Functions with a given parameter type annotation
+    # 14. Functions with a given parameter type annotation
     # ------------------------------------------------------------------
 
     def functions_with_param_type(
