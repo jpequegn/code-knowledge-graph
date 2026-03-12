@@ -29,7 +29,7 @@ uv run ckg --help
 |-------|---------|--------|
 | #5 | Project setup | ✅ Done |
 | #6 | AST parser | ✅ Done |
-| #4 | Property graph | 🔜 Planned |
+| #4 | Property graph | ✅ Done |
 | #2 | DuckDB persistence | 🔜 Planned |
 | #7 | Structural queries | 🔜 Planned |
 | #1 | CLI (full) | 🔜 Planned |
