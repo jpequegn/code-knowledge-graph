@@ -31,6 +31,6 @@ uv run ckg --help
 | #6 | AST parser | ✅ Done |
 | #4 | Property graph | ✅ Done |
 | #2 | DuckDB persistence | 🔜 Planned |
-| #7 | Structural queries | 🔜 Planned |
+| #7 | Structural queries | ✅ Done |
 | #1 | CLI (full) | 🔜 Planned |
 | #3 | Eval on P³ | 🔜 Planned |
