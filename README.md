@@ -32,5 +32,5 @@ uv run ckg --help
 | #4 | Property graph | ✅ Done |
 | #2 | DuckDB persistence | 🔜 Planned |
 | #7 | Structural queries | ✅ Done |
-| #1 | CLI (full) | 🔜 Planned |
+| #1 | CLI (full) | ✅ Done |
 | #3 | Eval on P³ | 🔜 Planned |
