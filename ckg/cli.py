@@ -198,7 +198,8 @@ def build(ctx: click.Context, repo: str, incremental: bool, force: bool) -> None
 @cli.command(context_settings={"ignore_unknown_options": True})
 @click.argument("subcommand", type=click.Choice(
     ["impact", "callers", "callees", "hotspots", "dead-code", "path", "raises",
-     "search", "fan-in", "async", "inherits", "param-type", "file-fan-in"],
+     "search", "fan-in", "async", "inherits", "param-type", "file-fan-in",
+     "decorator", "transitive-deps", "transitive-callers"],
     case_sensitive=False,
 ))
 @click.argument("args", nargs=-1)
@@ -223,8 +224,11 @@ def query(ctx: click.Context, subcommand: str, args: tuple[str, ...], repo: str,
       dead-code                       Functions never called anywhere
       async                           All async functions
       inherits    <ClassName>         Direct subclasses of a class
-      param-type  <TypeAnnotation>    Functions with a given param type
-      path        <file_a> <file_b>   Dependency path between two files
+      param-type         <TypeAnnotation>    Functions with a given param type
+      decorator          <pattern>           Functions with matching decorator
+      transitive-deps    <file>              All transitive imports of a file
+      transitive-callers <name_or_id>        All functions that eventually call it
+      path               <file_a> <file_b>   Dependency path between two files
       raises      <ExceptionName>     Functions that raise an exception
       search      <query text>        Semantic similarity search over nodes
     """
@@ -455,6 +459,84 @@ def query(ctx: click.Context, subcommand: str, args: tuple[str, ...], repo: str,
             t.add_row(fn.id, fn.file_path, matching)
         console.print(t)
 
+    # ---- decorator --------------------------------------------------------
+    elif sub == "decorator":
+        if not args:
+            console.print("[red]Error:[/red] Usage: ckg query decorator <pattern>")
+            sys.exit(1)
+        pattern = " ".join(args)
+        fns = q.functions_with_decorator(pattern)
+        if not fns:
+            console.print(
+                f"[yellow]No functions found with decorator matching[/yellow] "
+                f"[cyan]{pattern}[/cyan]"
+            )
+            return
+        t = Table(
+            title=f'Functions decorated with "{pattern}"',
+            box=box.SIMPLE_HEAD,
+        )
+        t.add_column("Function", style="cyan")
+        t.add_column("File", style="dim")
+        t.add_column("Line", justify="right", width=6)
+        t.add_column("Decorator(s)", style="dim")
+        for fn in fns:
+            matching = "  |  ".join(
+                d for d in fn.decorators if pattern in d
+            )
+            t.add_row(fn.id, fn.file_path, str(fn.line_start), matching)
+        console.print(t)
+
+    # ---- transitive-deps --------------------------------------------------
+    elif sub == "transitive-deps":
+        [file_path] = _require_arg(args, 1, "Usage: ckg query transitive-deps <file>")
+        deps = q.transitive_deps(file_path)
+        if not deps:
+            console.print(
+                f"[yellow]No transitive dependencies found for[/yellow] "
+                f"[cyan]{file_path}[/cyan]"
+            )
+            return
+        # Separate local files from external modules
+        local = sorted(d for d in deps if g.get_node(d) is not None
+                       and hasattr(g.get_node(d), "path"))
+        external = sorted(d for d in deps if d not in local)
+        t = Table(
+            title=f"Transitive dependencies of {file_path} ({len(deps)} total)",
+            box=box.SIMPLE_HEAD,
+        )
+        t.add_column("Dependency", style="cyan")
+        t.add_column("Kind", style="dim", width=12)
+        for d in local:
+            t.add_row(d, "local file")
+        for d in external:
+            node = g.get_node(d)
+            kind = "stdlib" if (hasattr(node, "is_stdlib") and node.is_stdlib) else "external"
+            t.add_row(d, kind)
+        console.print(t)
+
+    # ---- transitive-callers -----------------------------------------------
+    elif sub == "transitive-callers":
+        [node_id] = _require_arg(args, 1, "Usage: ckg query transitive-callers <name_or_id>")
+        callers = q.transitive_callers(node_id)
+        if not callers:
+            console.print(
+                f"[yellow]No callers found for[/yellow] [cyan]{node_id}[/cyan]"
+            )
+            return
+        t = Table(
+            title=f"All transitive callers of {node_id} ({len(callers)} total)",
+            box=box.SIMPLE_HEAD,
+        )
+        t.add_column("Caller", style="cyan")
+        t.add_column("File", style="dim")
+        t.add_column("Line", justify="right", width=6)
+        t.add_column("CC", justify="right", width=4)
+        for fn in callers:
+            t.add_row(fn.id, fn.file_path, str(fn.line_start),
+                      _complexity_text(fn.cyclomatic_complexity))
+        console.print(t)
+
     # ---- search -----------------------------------------------------------
     elif sub == "search":
         if not args:
@@ -551,6 +633,8 @@ def _inspect_function(fn: FunctionNode, g: PropertyGraph, q: GraphQueries) -> No
     props.add_row("Signature", Text(fn.signature, style="cyan"))
     props.add_row("File", fn.file_path)
     props.add_row("Lines", f"{fn.line_start}–{fn.line_end}")
+    if fn.decorators:
+        props.add_row("Decorators", "  |  ".join(fn.decorators))
     props.add_row("Async", "yes" if fn.is_async else "no")
     props.add_row("Method", f"yes ({fn.class_name})" if fn.is_method else "no")
     if fn.params:

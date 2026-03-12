@@ -339,6 +339,7 @@ class _FileParser(ast.NodeVisitor):
             bases=bases,
             docstring=docstring,
             method_count=len(method_names),
+            decorators=[ast.unparse(d) for d in node.decorator_list],
         )
         self.classes.append(cls)
 
@@ -383,6 +384,7 @@ class _FileParser(ast.NodeVisitor):
         complexity = _cyclomatic_complexity(node)
         param_count = len(node.args.args) + len(node.args.posonlyargs) + len(node.args.kwonlyargs)
         params = _build_params(node)
+        decorators = [ast.unparse(d) for d in node.decorator_list]
 
         fn = FunctionNode(
             id=func_id,
@@ -399,6 +401,7 @@ class _FileParser(ast.NodeVisitor):
             class_name=class_name,
             param_count=param_count,
             params=params,
+            decorators=decorators,
         )
         self.functions.append(fn)
 

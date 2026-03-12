@@ -130,6 +130,7 @@ def _row_to_node(row: tuple) -> Node:
             class_name=props.get("class_name"),
             param_count=props.get("param_count", 0),
             params=params,
+            decorators=props.get("decorators", []),
         )
     if node_type == "class":
         return ClassNode(
@@ -141,6 +142,7 @@ def _row_to_node(row: tuple) -> Node:
             bases=props.get("bases", []),
             docstring=props.get("docstring"),
             method_count=props.get("method_count", 0),
+            decorators=props.get("decorators", []),
         )
     if node_type == "module":
         return ModuleNode(
