@@ -12,6 +12,7 @@ from rich.table import Table
 from rich.text import Text
 from rich import box
 
+from ckg.embedder import NodeEmbedder
 from ckg.graph import PropertyGraph
 from ckg.models import FunctionNode, ClassNode, FileNode, ModuleNode
 from ckg.queries import GraphQueries
@@ -193,7 +194,7 @@ def build(ctx: click.Context, repo: str, incremental: bool, force: bool) -> None
 
 @cli.command(context_settings={"ignore_unknown_options": True})
 @click.argument("subcommand", type=click.Choice(
-    ["impact", "callers", "callees", "hotspots", "dead-code", "path", "raises"],
+    ["impact", "callers", "callees", "hotspots", "dead-code", "path", "raises", "search"],
     case_sensitive=False,
 ))
 @click.argument("args", nargs=-1)
@@ -216,6 +217,7 @@ def query(ctx: click.Context, subcommand: str, args: tuple[str, ...], repo: str,
       dead-code                   Functions never called anywhere
       path    <file_a> <file_b>   Dependency path between two files
       raises  <ExceptionName>     Functions that raise an exception
+      search  <query text>        Semantic similarity search over nodes
     """
     db_path: Path = ctx.obj["db_path"]
     g = _load_or_build_graph(repo, db_path)
@@ -344,6 +346,37 @@ def query(ctx: click.Context, subcommand: str, args: tuple[str, ...], repo: str,
         t.add_column("Line", justify="right", width=6)
         for fn in raisers:
             t.add_row(fn.id, fn.file_path, str(fn.line_start))
+        console.print(t)
+
+    # ---- search -----------------------------------------------------------
+    elif sub == "search":
+        if not args:
+            console.print("[red]Error:[/red] Usage: ckg query search <query text>")
+            sys.exit(1)
+        query_text = " ".join(args)
+        embedder = NodeEmbedder(GraphStore(db_path))
+        if embedder.embed_count() == 0:
+            console.print(
+                "[yellow]No embeddings found.[/yellow] "
+                "Run [cyan]ckg embed --repo .[/cyan] first."
+            )
+            sys.exit(1)
+        results = embedder.search(query_text, graph=g, top_k=top)
+        if not results:
+            console.print(f"[yellow]No results for[/yellow] [cyan]{query_text}[/cyan]")
+            return
+        t = Table(title=f'Semantic search: "{query_text}"', box=box.SIMPLE_HEAD)
+        t.add_column("Score", justify="right", width=7, style="bold")
+        t.add_column("Node", style="cyan")
+        t.add_column("File", style="dim")
+        t.add_column("Type", style="dim", width=10)
+        for node, score in results:
+            t.add_row(
+                f"{score:.3f}",
+                node.id,
+                getattr(node, "file_path", ""),
+                node.node_type,
+            )
         console.print(t)
 
 
@@ -538,6 +571,53 @@ def _inspect_file_node(fnode: FileNode, g: PropertyGraph) -> None:
                 kind = imp.node_type
             t.add_row(imp.id, kind)
         console.print(t)
+
+
+# ---------------------------------------------------------------------------
+# ckg embed
+# ---------------------------------------------------------------------------
+
+@cli.command()
+@click.option("--repo", default=".", type=click.Path(exists=True),
+              help="Repository root (default: current directory).")
+@click.option("--force", is_flag=True,
+              help="Re-embed all nodes even if already stored.")
+@click.option("--model", default="all-MiniLM-L6-v2", show_default=True,
+              help="Sentence-transformers model to use.")
+@click.pass_context
+def embed(ctx: click.Context, repo: str, force: bool, model: str) -> None:
+    """Embed all function and class nodes for semantic search.
+
+    Vectors are stored in the DuckDB cache alongside the graph and used
+    by [cyan]ckg query search[/cyan].  Running this command again is safe
+    (already-embedded nodes are skipped unless --force is given).
+    """
+    db_path: Path = ctx.obj["db_path"]
+    g = _load_or_build_graph(repo, db_path)
+    store = GraphStore(db_path)
+    embedder = NodeEmbedder(store, model_name=model)
+
+    total_eligible = sum(
+        1 for n in g.iter_nodes()
+        if isinstance(n, (FunctionNode, ClassNode))
+    )
+    console.print(
+        f"[dim]Embedding[/dim] [bold]{total_eligible}[/bold] nodes "
+        f"using [cyan]{model}[/cyan]…"
+    )
+    n_embedded = embedder.embed_all(g, force=force)
+    total_stored = embedder.embed_count()
+    if n_embedded == 0:
+        console.print(
+            f"[green]✓[/green] Nothing new to embed "
+            f"([bold]{total_stored}[/bold] nodes already embedded). "
+            "Use [cyan]--force[/cyan] to re-embed."
+        )
+    else:
+        console.print(
+            f"[green]✓[/green] Embedded [bold]{n_embedded}[/bold] node(s) "
+            f"([bold]{total_stored}[/bold] total in cache)"
+        )
 
 
 # ---------------------------------------------------------------------------
