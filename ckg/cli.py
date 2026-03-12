@@ -15,8 +15,13 @@ from rich import box
 from ckg.graph import PropertyGraph
 from ckg.models import FunctionNode, ClassNode, FileNode, ModuleNode
 from ckg.queries import GraphQueries
+from ckg.store import GraphStore
 
 console = Console()
+
+# Default DB location (can be overridden with --db)
+_DEFAULT_DB = Path.home() / ".ckg" / "graph.db"
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -35,16 +40,11 @@ def _complexity_text(cc: int) -> Text:
     return Text(str(cc), style=style)
 
 
-def _build_graph(repo: str) -> PropertyGraph:
-    """Parse *repo* and return a populated PropertyGraph, with progress output."""
-    root = Path(repo).resolve()
-    console.print(f"[dim]Scanning[/dim] [cyan]{root}[/cyan]…")
-    g = PropertyGraph()
-    g.build_from_directory(root)
+def _print_graph_summary(g: PropertyGraph, *, prefix: str = "✓") -> None:
     by_type = g.node_count_by_type()
     by_edge = g.edge_count_by_type()
     console.print(
-        f"[green]✓[/green] Built graph: "
+        f"[green]{prefix}[/green] Graph: "
         f"[bold]{g.node_count()}[/bold] nodes "
         f"([cyan]{by_type.get('function', 0)}[/cyan] functions, "
         f"[cyan]{by_type.get('class', 0)}[/cyan] classes, "
@@ -53,6 +53,50 @@ def _build_graph(repo: str) -> PropertyGraph:
         f"([cyan]{by_edge.get('CALLS', 0)}[/cyan] calls, "
         f"[cyan]{by_edge.get('IMPORTS', 0)}[/cyan] imports)"
     )
+
+
+def _load_or_build_graph(repo: str, db_path: Path, *, force: bool = False) -> PropertyGraph:
+    """Return a graph, loading from the DB cache when available and fresh.
+
+    If *force* is True, always re-parse from source.
+    Falls back to a full parse when no DB exists yet.
+    """
+    store = GraphStore(db_path)
+    root = Path(repo).resolve()
+
+    if not force and db_path.exists():
+        # Check whether the cache is stale (any file needs re-parse)
+        stale = any(
+            store.needs_reparse(f, root)
+            for f in store.stored_files()
+        )
+        # Also check for new files not yet in cache
+        _SKIP = {".venv", "__pycache__", ".git", "dist", "build",
+                 ".mypy_cache", ".ruff_cache"}
+        known = set(store.stored_files())
+        new_files = [
+            str(p.relative_to(root))
+            for p in sorted(root.rglob("*.py"))
+            if not any(part in _SKIP or part.endswith(".egg-info") for part in p.parts)
+            and str(p.relative_to(root)) not in known
+        ]
+
+        if not stale and not new_files:
+            console.print(f"[dim]Loading graph from cache[/dim] [cyan]{db_path}[/cyan]…")
+            g = store.load()
+            _print_graph_summary(g, prefix="✓ Loaded")
+            return g
+
+        console.print(f"[dim]Cache stale — rebuilding[/dim] [cyan]{root}[/cyan]…")
+        g, reparsed = store.rebuild_incremental(root)
+        console.print(f"[green]✓[/green] Re-parsed [bold]{len(reparsed)}[/bold] file(s)")
+        _print_graph_summary(g)
+        return g
+
+    # No cache — full parse
+    console.print(f"[dim]Scanning[/dim] [cyan]{root}[/cyan]…")
+    g = store.build_and_save(root)
+    _print_graph_summary(g, prefix="✓ Built")
     return g
 
 
@@ -69,13 +113,26 @@ def _require_arg(args: tuple[str, ...], n: int, usage: str) -> list[str]:
 
 @click.group()
 @click.version_option(package_name="code-knowledge-graph")
-def cli() -> None:
+@click.option(
+    "--db",
+    default=str(_DEFAULT_DB),
+    show_default=True,
+    envvar="CKG_DB",
+    help="Path to the DuckDB graph cache.",
+)
+@click.pass_context
+def cli(ctx: click.Context, db: str) -> None:
     """Code Knowledge Graph — structural analysis for Python codebases.
 
     Build a property graph from your Python source code and answer
     structural questions: impact radius, dead code, complexity hotspots,
     dependency paths, and more.
+
+    The graph is cached in a DuckDB file (default: ~/.ckg/graph.db).
+    Subsequent queries load from cache and only re-parse changed files.
     """
+    ctx.ensure_object(dict)
+    ctx.obj["db_path"] = Path(db)
 
 
 # ---------------------------------------------------------------------------
@@ -84,15 +141,50 @@ def cli() -> None:
 
 @cli.command()
 @click.argument("repo", default=".", type=click.Path(exists=True))
-@click.option("--incremental", is_flag=True, help="Only re-parse changed files (not yet implemented).")
-def build(repo: str, incremental: bool) -> None:
-    """Build the knowledge graph from a Python repository.
+@click.option("--incremental", is_flag=True,
+              help="Only re-parse files changed since last build.")
+@click.option("--force", is_flag=True,
+              help="Force full rebuild, ignoring the cache.")
+@click.pass_context
+def build(ctx: click.Context, repo: str, incremental: bool, force: bool) -> None:
+    """Build (or update) the knowledge graph from a Python repository.
 
     REPO is the path to the root of the repository (default: current directory).
+    The graph is persisted to the DuckDB cache for fast subsequent queries.
     """
-    if incremental:
-        console.print("[yellow]--incremental is not yet implemented; running full build.[/yellow]")
-    _build_graph(repo)
+    db_path: Path = ctx.obj["db_path"]
+    root = Path(repo).resolve()
+    store = GraphStore(db_path)
+
+    if force:
+        console.print(f"[dim]Force rebuild from[/dim] [cyan]{root}[/cyan]…")
+        g = store.build_and_save(root)
+        _print_graph_summary(g, prefix="✓ Built")
+    elif incremental and db_path.exists():
+        console.print(f"[dim]Incremental rebuild of[/dim] [cyan]{root}[/cyan]…")
+        g, reparsed = store.rebuild_incremental(root)
+        if reparsed:
+            console.print(
+                f"[green]✓[/green] Re-parsed [bold]{len(reparsed)}[/bold] file(s): "
+                + ", ".join(reparsed[:5])
+                + (" …" if len(reparsed) > 5 else "")
+            )
+        else:
+            console.print("[green]✓[/green] Nothing changed — cache is up to date.")
+        _print_graph_summary(g)
+    else:
+        if incremental:
+            console.print("[yellow]No cache found — running full build.[/yellow]")
+        console.print(f"[dim]Scanning[/dim] [cyan]{root}[/cyan]…")
+        g = store.build_and_save(root)
+        _print_graph_summary(g, prefix="✓ Built")
+
+    stats = store.db_stats()
+    console.print(
+        f"[dim]Cache:[/dim] [cyan]{db_path}[/cyan] "
+        f"({stats['nodes']} nodes, {stats['edges']} edges, "
+        f"{stats['tracked_files']} tracked files)"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -111,7 +203,8 @@ def build(repo: str, incremental: bool) -> None:
               help="BFS depth for impact query.")
 @click.option("--top", default=10, show_default=True,
               help="Number of results for hotspots / fan-in queries.")
-def query(subcommand: str, args: tuple[str, ...], repo: str, depth: int, top: int) -> None:
+@click.pass_context
+def query(ctx: click.Context, subcommand: str, args: tuple[str, ...], repo: str, depth: int, top: int) -> None:
     """Run a structural query against the knowledge graph.
 
     \b
@@ -124,7 +217,8 @@ def query(subcommand: str, args: tuple[str, ...], repo: str, depth: int, top: in
       path    <file_a> <file_b>   Dependency path between two files
       raises  <ExceptionName>     Functions that raise an exception
     """
-    g = _build_graph(repo)
+    db_path: Path = ctx.obj["db_path"]
+    g = _load_or_build_graph(repo, db_path)
     q = GraphQueries(g)
 
     sub = subcommand.lower()
@@ -262,7 +356,8 @@ def query(subcommand: str, args: tuple[str, ...], repo: str, depth: int, top: in
 @click.argument("target")
 @click.option("--repo", default=".", type=click.Path(exists=True),
               help="Repository root (default: current directory).")
-def inspect(kind: str, target: str, repo: str) -> None:
+@click.pass_context
+def inspect(ctx: click.Context, kind: str, target: str, repo: str) -> None:
     """Inspect a node or file in the knowledge graph.
 
     \b
@@ -270,7 +365,8 @@ def inspect(kind: str, target: str, repo: str) -> None:
       node <node_id>   Full details for a single function or class node
       file <path>      All nodes defined in a file
     """
-    g = _build_graph(repo)
+    db_path: Path = ctx.obj["db_path"]
+    g = _load_or_build_graph(repo, db_path)
     q = GraphQueries(g)
 
     if kind == "node":
@@ -451,9 +547,11 @@ def _inspect_file_node(fnode: FileNode, g: PropertyGraph) -> None:
 @cli.command()
 @click.option("--repo", default=".", type=click.Path(exists=True),
               help="Repository root (default: current directory).")
-def stats(repo: str) -> None:
+@click.pass_context
+def stats(ctx: click.Context, repo: str) -> None:
     """Show summary statistics for the knowledge graph."""
-    g = _build_graph(repo)
+    db_path: Path = ctx.obj["db_path"]
+    g = _load_or_build_graph(repo, db_path)
     q = GraphQueries(g)
 
     by_type = g.node_count_by_type()
