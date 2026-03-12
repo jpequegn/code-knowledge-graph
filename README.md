@@ -33,4 +33,4 @@ uv run ckg --help
 | #2 | DuckDB persistence | 🔜 Planned |
 | #7 | Structural queries | ✅ Done |
 | #1 | CLI (full) | ✅ Done |
-| #3 | Eval on P³ | 🔜 Planned |
+| #3 | Eval on P³ | ✅ Done |

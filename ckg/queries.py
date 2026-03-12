@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING
 
 import networkx as nx
 
-from ckg.models import FunctionNode, FileNode, Node
+from ckg.models import FunctionNode, FileNode, ModuleNode, Node
 
 if TYPE_CHECKING:
     from ckg.graph import PropertyGraph
@@ -123,10 +123,20 @@ class GraphQueries:
         for d in range(1, depth + 1):
             next_frontier: set[str] = set()
             for nid in frontier:
+                # Expand via exact node-ID in-edges
                 for src, _, data in self._g.nx_graph.in_edges(nid, data=True):
                     if data.get("edge_type") == "CALLS" and src not in visited:
                         next_frontier.add(src)
                         visited.add(src)
+                # Also expand via bare-name in-edges (unresolved self.obj.method() calls)
+                node = self._g.get_node(nid)
+                if isinstance(node, FunctionNode):
+                    bare = node.name
+                    if bare != nid and bare in self._g.nx_graph:
+                        for src, _, data in self._g.nx_graph.in_edges(bare, data=True):
+                            if data.get("edge_type") == "CALLS" and src not in visited:
+                                next_frontier.add(src)
+                                visited.add(src)
             if not next_frontier:
                 break
             frontier = next_frontier  # advance BFS wave
@@ -297,12 +307,40 @@ class GraphQueries:
         """Return all functions that call *name_or_id*.
 
         Accepts a bare name (resolved if unambiguous) or a full node ID.
+
+        Handles two cases:
+        1. Direct graph predecessors via CALLS edges (fully qualified dst_id).
+        2. Unresolved call edges whose dst_id is the bare function name
+           (e.g. ``self.db.add_episode(...)`` → dst_id ``"add_episode"``).
         """
         node_id = self._resolve_id(name_or_id)
-        return [
-            n for n in self._g.predecessors(node_id, edge_type="CALLS")
+        node = self._g.get_node(node_id)
+        bare_name = node.name if isinstance(node, FunctionNode) else name_or_id
+
+        # Case 1: edges pointing to the full qualified node ID
+        direct = {
+            n.id: n
+            for n in self._g.predecessors(node_id, edge_type="CALLS")
             if isinstance(n, FunctionNode)
-        ]
+        }
+
+        # Case 2: edges pointing to the bare function name as dst_id
+        # (unresolved method calls like self.obj.method())
+        via_bare: dict[str, FunctionNode] = {}
+        if bare_name != node_id and bare_name in self._g.nx_graph:
+            for n in self._g.predecessors(bare_name, edge_type="CALLS"):
+                if isinstance(n, FunctionNode) and n.id not in direct:
+                    via_bare[n.id] = n
+
+        # Also scan all CALLS edges for bare-name matches not yet in graph as a node
+        for src, dst, data in self._g.nx_graph.in_edges(bare_name, data=True):
+            if data.get("edge_type") == "CALLS":
+                caller = self._g.get_node(src)
+                if isinstance(caller, FunctionNode) and caller.id not in direct:
+                    via_bare[caller.id] = caller
+
+        merged = {**direct, **via_bare}
+        return sorted(merged.values(), key=lambda f: f.id)
 
     def callees(self, name_or_id: str) -> list[FunctionNode]:
         """Return all functions called by *name_or_id*.
@@ -320,8 +358,26 @@ class GraphQueries:
     # ------------------------------------------------------------------
 
     def file_fan_in(self, *, top_k: int = 10) -> list[tuple[FileNode, int]]:
-        """Return the *top_k* files imported by the most other files (desc)."""
+        """Return the *top_k* files imported by the most other files (desc).
+
+        Counts both direct FileNode in-edges (absolute imports) and
+        local ModuleNode in-edges (relative imports like ``from .database import …``
+        which produce a ``ModuleNode("database")`` rather than a ``FileNode``).
+        The two counts are merged by matching each FileNode's stem name against
+        the module node ID.
+        """
+        from pathlib import Path as _Path
+
+        # Build stem → FileNode mapping for local module resolution
+        stem_to_file: dict[str, FileNode] = {}
+        for nid, node in self._g._nodes.items():
+            if isinstance(node, FileNode):
+                stem = _Path(node.path).stem  # e.g. "database" from "database.py"
+                stem_to_file[stem] = node
+
         counts: dict[str, int] = {}
+
+        # Direct FileNode in-edges
         for nid, node in self._g._nodes.items():
             if not isinstance(node, FileNode):
                 continue
@@ -330,7 +386,20 @@ class GraphQueries:
                 for _, _, data in self._g.nx_graph.in_edges(nid, data=True)
                 if data.get("edge_type") == "IMPORTS"
             )
-            counts[nid] = count
+            counts[nid] = counts.get(nid, 0) + count
+
+        # Local ModuleNode in-edges — map back to FileNode by stem
+        for nid, node in self._g._nodes.items():
+            if not isinstance(node, ModuleNode) or not node.is_local:
+                continue
+            count = sum(
+                1
+                for _, _, data in self._g.nx_graph.in_edges(nid, data=True)
+                if data.get("edge_type") == "IMPORTS"
+            )
+            if count and node.name in stem_to_file:
+                file_nid = stem_to_file[node.name].id
+                counts[file_nid] = counts.get(file_nid, 0) + count
 
         ranked = sorted(counts.items(), key=lambda kv: kv[1], reverse=True)[:top_k]
         return [
