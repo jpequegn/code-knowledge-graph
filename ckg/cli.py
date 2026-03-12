@@ -197,7 +197,8 @@ def build(ctx: click.Context, repo: str, incremental: bool, force: bool) -> None
 
 @cli.command(context_settings={"ignore_unknown_options": True})
 @click.argument("subcommand", type=click.Choice(
-    ["impact", "callers", "callees", "hotspots", "dead-code", "path", "raises", "search", "fan-in"],
+    ["impact", "callers", "callees", "hotspots", "dead-code", "path", "raises",
+     "search", "fan-in", "async", "inherits", "param-type", "file-fan-in"],
     case_sensitive=False,
 ))
 @click.argument("args", nargs=-1)
@@ -213,15 +214,19 @@ def query(ctx: click.Context, subcommand: str, args: tuple[str, ...], repo: str,
 
     \b
     Subcommands:
-      impact  <node_id>           Impact radius of a function change
-      callers <name_or_id>        All callers of a function
-      callees <name_or_id>        All callees of a function
-      hotspots                    Top-N complexity hotspots (--top N)
-      fan-in                      Top-N most-called functions (--top N)
-      dead-code                   Functions never called anywhere
-      path    <file_a> <file_b>   Dependency path between two files
-      raises  <ExceptionName>     Functions that raise an exception
-      search  <query text>        Semantic similarity search over nodes
+      impact      <node_id>           Impact radius of a function change
+      callers     <name_or_id>        All callers of a function
+      callees     <name_or_id>        All callees of a function
+      hotspots                        Top-N complexity hotspots (--top N)
+      fan-in                          Top-N most-called functions (--top N)
+      file-fan-in                     Top-N most-imported files (--top N)
+      dead-code                       Functions never called anywhere
+      async                           All async functions
+      inherits    <ClassName>         Direct subclasses of a class
+      param-type  <TypeAnnotation>    Functions with a given param type
+      path        <file_a> <file_b>   Dependency path between two files
+      raises      <ExceptionName>     Functions that raise an exception
+      search      <query text>        Semantic similarity search over nodes
     """
     db_path: Path = ctx.obj["db_path"]
     g = _load_or_build_graph(repo, db_path)
@@ -374,6 +379,82 @@ def query(ctx: click.Context, subcommand: str, args: tuple[str, ...], repo: str,
             )
         console.print(t)
 
+    # ---- file-fan-in ------------------------------------------------------
+    elif sub == "file-fan-in":
+        results = q.file_fan_in(top_k=top)
+        if not results:
+            console.print("[yellow]No files found.[/yellow]")
+            return
+        t = Table(title=f"Top-{top} Most-Imported Files", box=box.SIMPLE_HEAD)
+        t.add_column("#", justify="right", width=4, style="dim")
+        t.add_column("File", style="cyan")
+        t.add_column("Importers", justify="right", width=10)
+        for i, (file_node, count) in enumerate(results, 1):
+            if count > 0:
+                t.add_row(str(i), file_node.path, str(count))
+        console.print(t)
+
+    # ---- async ------------------------------------------------------------
+    elif sub == "async":
+        async_fns = q.async_functions()
+        if not async_fns:
+            console.print("[yellow]No async functions found.[/yellow]")
+            return
+        t = Table(title="Async Functions", box=box.SIMPLE_HEAD)
+        t.add_column("Function", style="cyan")
+        t.add_column("File", style="dim")
+        t.add_column("Line", justify="right", width=6)
+        t.add_column("CC", justify="right", width=4)
+        for fn in async_fns:
+            t.add_row(fn.id, fn.file_path, str(fn.line_start),
+                      _complexity_text(fn.cyclomatic_complexity))
+        console.print(t)
+
+    # ---- inherits ---------------------------------------------------------
+    elif sub == "inherits":
+        [base] = _require_arg(args, 1, "Usage: ckg query inherits <ClassName>")
+        subs = q.subclasses(base)
+        if not subs:
+            console.print(f"[yellow]No classes inherit from[/yellow] [cyan]{base}[/cyan]")
+            return
+        t = Table(title=f"Subclasses of {base}", box=box.SIMPLE_HEAD)
+        t.add_column("Class", style="cyan")
+        t.add_column("File", style="dim")
+        t.add_column("Line", justify="right", width=6)
+        t.add_column("Methods", justify="right", width=8)
+        for cls in subs:
+            t.add_row(cls.id, cls.file_path, str(cls.line_start), str(cls.method_count))
+        console.print(t)
+
+    # ---- param-type -------------------------------------------------------
+    elif sub == "param-type":
+        if not args:
+            console.print("[red]Error:[/red] Usage: ckg query param-type <TypeAnnotation>")
+            sys.exit(1)
+        type_name = " ".join(args)
+        fns = q.functions_with_param_type(type_name)
+        if not fns:
+            console.print(
+                f"[yellow]No functions found with a parameter of type[/yellow] "
+                f"[cyan]{type_name}[/cyan]"
+            )
+            return
+        t = Table(
+            title=f'Functions with param type containing "{type_name}"',
+            box=box.SIMPLE_HEAD,
+        )
+        t.add_column("Function", style="cyan")
+        t.add_column("File", style="dim")
+        t.add_column("Matching param(s)", style="dim")
+        for fn in fns:
+            matching = ", ".join(
+                f"{p.name}: {p.annotation}"
+                for p in fn.params
+                if p.annotation and type_name in p.annotation
+            )
+            t.add_row(fn.id, fn.file_path, matching)
+        console.print(t)
+
     # ---- search -----------------------------------------------------------
     elif sub == "search":
         if not args:
@@ -472,7 +553,18 @@ def _inspect_function(fn: FunctionNode, g: PropertyGraph, q: GraphQueries) -> No
     props.add_row("Lines", f"{fn.line_start}–{fn.line_end}")
     props.add_row("Async", "yes" if fn.is_async else "no")
     props.add_row("Method", f"yes ({fn.class_name})" if fn.is_method else "no")
-    props.add_row("Params", str(fn.param_count))
+    if fn.params:
+        param_strs = []
+        for p in fn.params:
+            s = p.name
+            if p.annotation:
+                s += f": {p.annotation}"
+            if p.default is not None:
+                s += f" = {p.default}"
+            param_strs.append(s)
+        props.add_row("Params", f"({fn.param_count})  " + ",  ".join(param_strs))
+    else:
+        props.add_row("Params", str(fn.param_count))
     props.add_row("Return type", fn.return_type or "—")
     props.add_row("Complexity", _complexity_text(fn.cyclomatic_complexity))
     props.add_row("Docstring", fn.docstring or "—")

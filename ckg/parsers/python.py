@@ -17,6 +17,7 @@ from ckg.models import (
     FileNode,
     FunctionNode,
     ModuleNode,
+    ParamInfo,
     ParseResult,
 )
 
@@ -118,6 +119,81 @@ def _annotation_to_str(node: ast.expr | None) -> str | None:
         return ast.unparse(node)
     except Exception:
         return None
+
+
+# ---------------------------------------------------------------------------
+# Parameter info extractor
+# ---------------------------------------------------------------------------
+
+def _build_params(
+    func: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> list[ParamInfo]:
+    """Return a structured list of :class:`~ckg.models.ParamInfo` for *func*.
+
+    Handles positional-only, regular, keyword-only, *args, and **kwargs.
+    Defaults are aligned right (the last N regular args have defaults).
+    """
+    args_obj = func.args
+    params: list[ParamInfo] = []
+
+    # Positional-only args (Python 3.8+) — no defaults support in pos-only
+    posonlyargs = args_obj.posonlyargs
+    # Regular args
+    regargs = args_obj.args
+    # Keyword-only args (after *)
+    kwonlyargs = args_obj.kwonlyargs
+
+    # Defaults apply right-to-left across posonlyargs + regargs combined
+    all_positional = posonlyargs + regargs
+    n_defaults = len(args_obj.defaults)
+    default_offset = len(all_positional) - n_defaults
+
+    for i, arg in enumerate(all_positional):
+        default_idx = i - default_offset
+        default_str: str | None = None
+        if default_idx >= 0:
+            try:
+                default_str = ast.unparse(args_obj.defaults[default_idx])
+            except Exception:
+                default_str = "..."
+        params.append(ParamInfo(
+            name=arg.arg,
+            annotation=_annotation_to_str(arg.annotation),
+            default=default_str,
+        ))
+
+    # *args
+    if args_obj.vararg:
+        params.append(ParamInfo(
+            name=f"*{args_obj.vararg.arg}",
+            annotation=_annotation_to_str(args_obj.vararg.annotation),
+            default=None,
+        ))
+
+    # Keyword-only args (each may have an individual default from kw_defaults)
+    for i, arg in enumerate(kwonlyargs):
+        kw_default = args_obj.kw_defaults[i] if i < len(args_obj.kw_defaults) else None
+        default_str = None
+        if kw_default is not None:
+            try:
+                default_str = ast.unparse(kw_default)
+            except Exception:
+                default_str = "..."
+        params.append(ParamInfo(
+            name=arg.arg,
+            annotation=_annotation_to_str(arg.annotation),
+            default=default_str,
+        ))
+
+    # **kwargs
+    if args_obj.kwarg:
+        params.append(ParamInfo(
+            name=f"**{args_obj.kwarg.arg}",
+            annotation=_annotation_to_str(args_obj.kwarg.annotation),
+            default=None,
+        ))
+
+    return params
 
 
 # ---------------------------------------------------------------------------
@@ -306,6 +382,7 @@ class _FileParser(ast.NodeVisitor):
         return_type = _annotation_to_str(node.returns)
         complexity = _cyclomatic_complexity(node)
         param_count = len(node.args.args) + len(node.args.posonlyargs) + len(node.args.kwonlyargs)
+        params = _build_params(node)
 
         fn = FunctionNode(
             id=func_id,
@@ -321,6 +398,7 @@ class _FileParser(ast.NodeVisitor):
             is_method=class_name is not None,
             class_name=class_name,
             param_count=param_count,
+            params=params,
         )
         self.functions.append(fn)
 

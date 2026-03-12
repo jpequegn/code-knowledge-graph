@@ -36,6 +36,7 @@ from ckg.models import (
     FunctionNode,
     ModuleNode,
     Node,
+    ParamInfo,
 )
 
 if TYPE_CHECKING:
@@ -105,6 +106,15 @@ def _row_to_node(row: tuple) -> Node:
             avg_complexity=props.get("avg_complexity", 0.0),
         )
     if node_type == "function":
+        raw_params = props.get("params", [])
+        params = [
+            ParamInfo(
+                name=p["name"],
+                annotation=p.get("annotation"),
+                default=p.get("default"),
+            )
+            for p in raw_params
+        ]
         return FunctionNode(
             id=nid,
             name=name or "",
@@ -119,6 +129,7 @@ def _row_to_node(row: tuple) -> Node:
             is_method=props.get("is_method", False),
             class_name=props.get("class_name"),
             param_count=props.get("param_count", 0),
+            params=params,
         )
     if node_type == "class":
         return ClassNode(
