@@ -14,6 +14,9 @@ ckg query dead-code                            # functions never called
 ckg query path 'cli.py' 'database.py'          # dependency chain
 ckg inspect node 'database.py::add_episode'    # full node details
 ckg stats                                      # graph summary
+ckg embed --repo .                             # build semantic search index
+ckg query search "audio transcription"         # semantic similarity search
+ckg watch --repo .                             # auto-rebuild on file changes
 ```
 
 ## Installation
@@ -32,6 +35,7 @@ uv run ckg --help
 | #4 | Property graph | ✅ Done |
 | #2 | DuckDB persistence | ✅ Done |
 | #15 | Hybrid search (semantic embeddings) | ✅ Done |
+| #18 | `ckg watch` filesystem watcher | ✅ Done |
 | #7 | Structural queries | ✅ Done |
 | #1 | CLI (full) | ✅ Done |
 | #3 | Eval on P³ | ✅ Done |

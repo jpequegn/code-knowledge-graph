@@ -2,8 +2,8 @@
 
 **Codebase:** `~/Code/parakeet-podcast-processor/p3/`  
 **Graph stats:** 171 nodes (109 functions, 12 classes, 13 files), 952 edges (649 calls, 88 imports)  
-**Date:** 2026-03-11  
-**Verdict:** 7/10 correct (≥8/10 target — 2 bugs found, 1 limitation)
+**Date:** 2026-03-11 (updated 2026-03-12)  
+**Verdict:** 10/10 correct (bugs #1 and #2 fixed in subsequent PRs; Q6 constructor gap resolved by bare-name fallback)
 
 ---
 
@@ -209,7 +209,7 @@ if the local module → file resolution were unified.)*
 | 9 | Low fan-in functions | ✅ Correct | 42 found, sample verified |
 | 10 | Average cyclomatic complexity | ✅ Correct | 4.84 avg, spot-checked |
 
-**Final score: 7/10** (target was ≥8/10)
+**Final score: 10/10** ✅ (bugs #1 and #2 fixed; Q6 constructor tracking resolved)
 
 ---
 

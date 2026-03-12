@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import time
 from pathlib import Path
 
 import click
@@ -17,6 +18,7 @@ from ckg.graph import PropertyGraph
 from ckg.models import FunctionNode, ClassNode, FileNode, ModuleNode
 from ckg.queries import GraphQueries
 from ckg.store import GraphStore
+from ckg.watcher import GraphWatcher
 
 console = Console()
 
@@ -696,6 +698,98 @@ def stats(ctx: click.Context, repo: str) -> None:
             if cnt > 0:
                 fit.add_row(file_node.path, str(cnt))
         console.print(fit)
+
+
+# ---------------------------------------------------------------------------
+# ckg watch
+# ---------------------------------------------------------------------------
+
+@cli.command()
+@click.option("--repo", default=".", type=click.Path(exists=True),
+              help="Repository root to watch (default: current directory).")
+@click.option("--embed", "do_embed", is_flag=True,
+              help="Re-embed changed nodes after each rebuild.")
+@click.option("--debounce", default=0.5, show_default=True,
+              help="Seconds of quiet time before triggering a rebuild.")
+@click.pass_context
+def watch(ctx: click.Context, repo: str, do_embed: bool, debounce: float) -> None:
+    """Watch for file changes and keep the graph cache up-to-date.
+
+    Monitors the repository for Python file changes and automatically runs
+    an incremental rebuild so every \b``ckg query`` is always working
+    against the latest code.  Press Ctrl-C to stop.
+    """
+    import datetime
+    from rich.live import Live
+    from rich.panel import Panel as RichPanel
+
+    db_path: Path = ctx.obj["db_path"]
+    root = Path(repo).resolve()
+    store = GraphStore(db_path)
+
+    # Ensure graph is built before watching
+    if not db_path.exists():
+        console.print(f"[dim]No cache found — building first from[/dim] [cyan]{root}[/cyan]…")
+        store.build_and_save(root)
+
+    embedder: NodeEmbedder | None = None
+    if do_embed:
+        embedder = NodeEmbedder(store)
+
+    # Log of recent events shown in the live panel
+    event_log: list[str] = []
+    _MAX_LOG = 12
+
+    def _rebuild_callback(reparsed: list[str], deleted: list[str]) -> None:
+        ts = datetime.datetime.now().strftime("%H:%M:%S")
+        if reparsed:
+            files = ", ".join(reparsed[:3]) + (" …" if len(reparsed) > 3 else "")
+            event_log.append(f"[dim]{ts}[/dim] [green]rebuilt[/green] {files}")
+        if deleted:
+            files = ", ".join(deleted[:3]) + (" …" if len(deleted) > 3 else "")
+            event_log.append(f"[dim]{ts}[/dim] [red]deleted[/red] {files}")
+        # Keep log bounded
+        while len(event_log) > _MAX_LOG:
+            event_log.pop(0)
+
+    watcher = GraphWatcher(
+        root,
+        store=store,
+        embedder=embedder,
+        debounce_seconds=debounce,
+        on_rebuild=_rebuild_callback,
+    )
+
+    def _status_panel() -> RichPanel:
+        stats = store.db_stats()
+        embed_line = ""
+        if do_embed and embedder is not None:
+            embed_line = f"\n  Embeddings: [cyan]{embedder.embed_count()}[/cyan] nodes"
+        header = (
+            f"[bold green]●[/bold green] Watching [cyan]{root}[/cyan]  "
+            f"([dim]Ctrl-C to stop[/dim])\n"
+            f"  Graph: [bold]{stats['nodes']}[/bold] nodes · "
+            f"[bold]{stats['edges']}[/bold] edges · "
+            f"[bold]{stats['tracked_files']}[/bold] files tracked"
+            + embed_line
+        )
+        body = "\n".join(event_log) if event_log else "[dim](waiting for changes…)[/dim]"
+        return RichPanel(header + "\n\n" + body, expand=False)
+
+    import threading
+    watcher_thread = threading.Thread(target=watcher.start, daemon=True)
+    watcher_thread.start()
+
+    try:
+        with Live(_status_panel(), refresh_per_second=4, console=console) as live:
+            while watcher.is_running:
+                live.update(_status_panel())
+                time.sleep(0.25)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        watcher.stop()
+        console.print("\n[dim]Watcher stopped.[/dim]")
 
 
 # ---------------------------------------------------------------------------
