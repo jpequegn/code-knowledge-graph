@@ -14,6 +14,7 @@ from rich.text import Text
 from rich import box
 
 from ckg.embedder import NodeEmbedder
+from ckg.export import export_json, export_csv, export_dot
 from ckg.graph import PropertyGraph
 from ckg.models import FunctionNode, ClassNode, FileNode, ModuleNode
 from ckg.queries import GraphQueries
@@ -196,7 +197,7 @@ def build(ctx: click.Context, repo: str, incremental: bool, force: bool) -> None
 
 @cli.command(context_settings={"ignore_unknown_options": True})
 @click.argument("subcommand", type=click.Choice(
-    ["impact", "callers", "callees", "hotspots", "dead-code", "path", "raises", "search"],
+    ["impact", "callers", "callees", "hotspots", "dead-code", "path", "raises", "search", "fan-in"],
     case_sensitive=False,
 ))
 @click.argument("args", nargs=-1)
@@ -216,6 +217,7 @@ def query(ctx: click.Context, subcommand: str, args: tuple[str, ...], repo: str,
       callers <name_or_id>        All callers of a function
       callees <name_or_id>        All callees of a function
       hotspots                    Top-N complexity hotspots (--top N)
+      fan-in                      Top-N most-called functions (--top N)
       dead-code                   Functions never called anywhere
       path    <file_a> <file_b>   Dependency path between two files
       raises  <ExceptionName>     Functions that raise an exception
@@ -348,6 +350,28 @@ def query(ctx: click.Context, subcommand: str, args: tuple[str, ...], repo: str,
         t.add_column("Line", justify="right", width=6)
         for fn in raisers:
             t.add_row(fn.id, fn.file_path, str(fn.line_start))
+        console.print(t)
+
+    # ---- fan-in -----------------------------------------------------------
+    elif sub == "fan-in":
+        results = q.fan_in(top_k=top)
+        if not results:
+            console.print("[yellow]No functions found.[/yellow]")
+            return
+        t = Table(title=f"Top-{top} Most-Called Functions (fan-in)", box=box.SIMPLE_HEAD)
+        t.add_column("#", justify="right", width=4, style="dim")
+        t.add_column("Function", style="cyan")
+        t.add_column("File", style="dim")
+        t.add_column("Callers", justify="right", width=8)
+        t.add_column("CC", justify="right", width=4)
+        for i, (fn, count) in enumerate(results, 1):
+            t.add_row(
+                str(i),
+                fn.id,
+                fn.file_path,
+                str(count),
+                _complexity_text(fn.cyclomatic_complexity),
+            )
         console.print(t)
 
     # ---- search -----------------------------------------------------------
@@ -573,6 +597,71 @@ def _inspect_file_node(fnode: FileNode, g: PropertyGraph) -> None:
                 kind = imp.node_type
             t.add_row(imp.id, kind)
         console.print(t)
+
+
+# ---------------------------------------------------------------------------
+# ckg export
+# ---------------------------------------------------------------------------
+
+@cli.command("export")
+@click.option("--format", "fmt",
+              type=click.Choice(["json", "csv", "dot"], case_sensitive=False),
+              default="json", show_default=True,
+              help="Output format.")
+@click.option("--only",
+              type=click.Choice(["nodes", "edges", "both"], case_sensitive=False),
+              default="both", show_default=True,
+              help="What to include (JSON only).")
+@click.option("--output", "-o", default=None,
+              help="Output file path (JSON/DOT) or directory (CSV). "
+                   "Default: print to stdout (JSON/DOT) or write to current dir (CSV).")
+@click.option("--repo", default=".", type=click.Path(exists=True),
+              help="Repository root (default: current directory).")
+@click.pass_context
+def export_cmd(ctx: click.Context, fmt: str, only: str, output: str | None, repo: str) -> None:
+    """Export the knowledge graph to JSON, CSV, or Graphviz DOT.
+
+    \b
+    Formats:
+      json   Single JSON object with 'nodes' and 'edges' arrays (stdout or -o file)
+      csv    Two files: nodes.csv + edges.csv  (written to -o dir, default: .)
+      dot    Graphviz DOT language  (stdout or -o file; render with: dot -Tpng)
+
+    \b
+    Examples:
+      ckg export --format json > graph.json
+      ckg export --format csv --output ./out/
+      ckg export --format dot | dot -Tsvg > graph.svg
+      ckg export --format json --only nodes > nodes.json
+    """
+    db_path: Path = ctx.obj["db_path"]
+    g = _load_or_build_graph(repo, db_path)
+
+    fmt = fmt.lower()
+
+    if fmt == "json":
+        text = export_json(g, only=only)  # type: ignore[arg-type]
+        if output:
+            Path(output).write_text(text, encoding="utf-8")
+            console.print(f"[green]✓[/green] Written to [cyan]{output}[/cyan]")
+        else:
+            click.echo(text)
+
+    elif fmt == "csv":
+        out_dir = Path(output) if output else Path(".")
+        nodes_path, edges_path = export_csv(g, output_dir=out_dir)
+        console.print(
+            f"[green]✓[/green] Nodes → [cyan]{nodes_path}[/cyan]  "
+            f"Edges → [cyan]{edges_path}[/cyan]"
+        )
+
+    elif fmt == "dot":
+        text = export_dot(g)
+        if output:
+            Path(output).write_text(text, encoding="utf-8")
+            console.print(f"[green]✓[/green] Written to [cyan]{output}[/cyan]")
+        else:
+            click.echo(text)
 
 
 # ---------------------------------------------------------------------------

@@ -16,7 +16,11 @@ ckg inspect node 'database.py::add_episode'    # full node details
 ckg stats                                      # graph summary
 ckg embed --repo .                             # build semantic search index
 ckg query search "audio transcription"         # semantic similarity search
+ckg query fan-in                               # most-called functions
 ckg watch --repo .                             # auto-rebuild on file changes
+ckg export --format json > graph.json          # export full graph
+ckg export --format csv --output ./out/        # nodes.csv + edges.csv
+ckg export --format dot | dot -Tsvg > g.svg    # Graphviz visualisation
 ```
 
 ## Installation
@@ -36,6 +40,7 @@ uv run ckg --help
 | #2 | DuckDB persistence | ✅ Done |
 | #15 | Hybrid search (semantic embeddings) | ✅ Done |
 | #18 | `ckg watch` filesystem watcher | ✅ Done |
+| #20 | `ckg export` (JSON/CSV/DOT) + `fan-in` query | ✅ Done |
 | #7 | Structural queries | ✅ Done |
 | #1 | CLI (full) | ✅ Done |
 | #3 | Eval on P³ | ✅ Done |
