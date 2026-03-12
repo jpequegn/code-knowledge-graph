@@ -31,6 +31,7 @@ uv run ckg --help
 | #6 | AST parser | ✅ Done |
 | #4 | Property graph | ✅ Done |
 | #2 | DuckDB persistence | ✅ Done |
+| #15 | Hybrid search (semantic embeddings) | ✅ Done |
 | #7 | Structural queries | ✅ Done |
 | #1 | CLI (full) | ✅ Done |
 | #3 | Eval on P³ | ✅ Done |
