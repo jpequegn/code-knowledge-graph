@@ -7,6 +7,18 @@ from typing import Literal
 
 
 # ---------------------------------------------------------------------------
+# Parameter info (structured parameter metadata for FunctionNode)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class ParamInfo:
+    """Metadata for a single function parameter."""
+    name: str
+    annotation: str | None = None   # e.g. "str", "Optional[datetime]", None
+    default: str | None = None      # e.g. "None", "0", None (= required param)
+
+
+# ---------------------------------------------------------------------------
 # Node types
 # ---------------------------------------------------------------------------
 
@@ -39,6 +51,7 @@ class FunctionNode:
     is_method: bool
     class_name: str | None       # set when this is a method
     param_count: int = 0
+    params: list[ParamInfo] = field(default_factory=list)
 
     node_type: NodeType = "function"
 

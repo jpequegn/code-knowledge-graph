@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING
 
 import networkx as nx
 
-from ckg.models import FunctionNode, FileNode, ModuleNode, Node
+from ckg.models import ClassNode, FunctionNode, FileNode, ModuleNode, Node
 
 if TYPE_CHECKING:
     from ckg.graph import PropertyGraph
@@ -407,6 +407,81 @@ class GraphQueries:
             for nid, cnt in ranked
             if self._g.get_node(nid) is not None
         ]
+
+    # ------------------------------------------------------------------
+    # 9. Async functions
+    # ------------------------------------------------------------------
+
+    def async_functions(self) -> list[FunctionNode]:
+        """Return all functions declared with ``async def``."""
+        return sorted(
+            [n for n in self._g._nodes.values() if isinstance(n, FunctionNode) and n.is_async],
+            key=lambda f: f.id,
+        )
+
+    # ------------------------------------------------------------------
+    # 10. Subclasses (INHERITS edges)
+    # ------------------------------------------------------------------
+
+    def subclasses(self, base_name: str) -> list[ClassNode]:
+        """Return all classes that directly inherit from *base_name*.
+
+        Matches the ``bases`` field of :class:`~ckg.models.ClassNode` —
+        i.e. direct (one-hop) subclasses only.
+
+        Parameters
+        ----------
+        base_name:
+            Simple class name (e.g. ``\"BaseModel\"``) or a dotted name
+            (e.g. ``\"pydantic.BaseModel\"``).  Matching is done against
+            INHERITS edge destination IDs, which are the ``ast.unparse``
+            representation of the base expression.
+        """
+        result: list[ClassNode] = []
+        for src, dst, data in self._g.nx_graph.edges(data=True):
+            if data.get("edge_type") != "INHERITS":
+                continue
+            if dst != base_name:
+                continue
+            node = self._g.get_node(src)
+            if isinstance(node, ClassNode):
+                result.append(node)
+        return sorted(result, key=lambda c: c.id)
+
+    # ------------------------------------------------------------------
+    # 11. Functions with a given parameter type annotation
+    # ------------------------------------------------------------------
+
+    def functions_with_param_type(
+        self,
+        type_name: str,
+        *,
+        substring: bool = True,
+    ) -> list[FunctionNode]:
+        """Return functions that have at least one parameter annotated with *type_name*.
+
+        Parameters
+        ----------
+        type_name:
+            Annotation string to search for (e.g. ``\"datetime\"``,
+            ``\"Optional[str]\"``, ``\"str\"``).
+        substring:
+            If True (default), match when *type_name* appears anywhere in
+            the annotation string.  Set to False for exact matching.
+        """
+        result: list[FunctionNode] = []
+        for node in self._g._nodes.values():
+            if not isinstance(node, FunctionNode):
+                continue
+            for p in node.params:
+                ann = p.annotation or ""
+                matched = (
+                    type_name in ann if substring else ann == type_name
+                )
+                if matched:
+                    result.append(node)
+                    break  # only add each function once
+        return sorted(result, key=lambda f: f.id)
 
     # ------------------------------------------------------------------
     # Internal helpers

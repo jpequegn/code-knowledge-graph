@@ -17,6 +17,10 @@ ckg stats                                      # graph summary
 ckg embed --repo .                             # build semantic search index
 ckg query search "audio transcription"         # semantic similarity search
 ckg query fan-in                               # most-called functions
+ckg query file-fan-in                          # most-imported files
+ckg query async                                # all async functions
+ckg query inherits BaseModel                   # direct subclasses
+ckg query param-type datetime                  # functions with datetime param
 ckg watch --repo .                             # auto-rebuild on file changes
 ckg export --format json > graph.json          # export full graph
 ckg export --format csv --output ./out/        # nodes.csv + edges.csv
@@ -41,6 +45,7 @@ uv run ckg --help
 | #15 | Hybrid search (semantic embeddings) | ✅ Done |
 | #18 | `ckg watch` filesystem watcher | ✅ Done |
 | #20 | `ckg export` (JSON/CSV/DOT) + `fan-in` query | ✅ Done |
+| #22 | Structured params + async/inherits/param-type/file-fan-in queries | ✅ Done |
 | #7 | Structural queries | ✅ Done |
 | #1 | CLI (full) | ✅ Done |
 | #3 | Eval on P³ | ✅ Done |
